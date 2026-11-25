@@ -1,7 +1,8 @@
 """FastAPI application factory and ASGI entry point."""
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
+from functools import partial
 from typing import Any
 
 from fastapi import FastAPI
@@ -15,12 +16,18 @@ from backend.app.api.router import api_router
 from backend.app.api.security import bearer_scheme
 from backend.app.core.logging import configure_logging
 from backend.app.core.settings import Settings, get_settings
+from backend.app.db.session import (
+    create_database_engine,
+    create_session_factory,
+    database_readiness_check,
+)
 
 
 def create_app(
     *,
     settings: Settings | None = None,
     readiness_check: ReadinessCheck | None = None,
+    enable_database_readiness: bool = False,
 ) -> FastAPI:
     """Create an isolated app with optional settings and readiness injection."""
 
@@ -29,7 +36,14 @@ def create_app(
         app_settings = settings if settings is not None else get_settings()
         configure_logging(settings=app_settings)
         application.state.settings = app_settings
-        yield
+        with ExitStack() as cleanup:
+            if enable_database_readiness:
+                engine = create_database_engine(app_settings)
+                cleanup.callback(engine.dispose)
+                application.state.session_factory = create_session_factory(engine)
+                if readiness_check is None:
+                    application.state.readiness_check = partial(database_readiness_check, engine)
+            yield
 
     application = FastAPI(title="LLM Agent Evaluation Platform", lifespan=lifespan, debug=False)
     application.state.readiness_check = readiness_check
@@ -55,4 +69,4 @@ def create_app(
     return application
 
 
-app = create_app()
+app = create_app(enable_database_readiness=True)
