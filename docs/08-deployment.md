@@ -1,12 +1,12 @@
 # 08 部署与运维
 
-状态 **设计基线 v0.1**。以下服务名、配置和命令是 M1 起的交付契约，当前尚无运行环境。
+状态 **设计基线 v0.2**。以下服务名、配置和命令是 M1 起的交付契约，当前尚无运行环境。
 
 ## 环境布局
 
 | 环境 | 服务 | 数据与访问 |
 | --- | --- | --- |
-| 本地与 CI | M1 启动 api、migrate、postgres、redis，Vue 3 在 frontend 独立开发和构建；M2 加入 worker 和 dispatcher | 前端开发服务器代理 API 到本地 FastAPI。M2 默认确定性 fake 模型，数据库和 Redis 仅容器网 |
+| 本地与 CI | M1 启动 api、migrate、postgres；M2 加入 redis、worker 和 dispatcher；M5 加入独立 Vue 3 构建 | M1/M2 用 Fake Model Provider。M5 前端代理至 FastAPI。PostgreSQL 在开发用 loopback 绑定，预发与生产内网访问 |
 | 预发 | 与生产同镜像，将数据库和 Redis 置于独立网络 | 经审批的测试密钥、配额和脱敏集，验证迁移、积压和备份 |
 | 生产 | TLS 网关、Vue 3 静态工件、API 实例、Worker 池、调度实例、独立 PostgreSQL/Redis | 同源交付管理台与 API；网关验证身份，应用校验授权；供应商和数据库走受控网络 |
 
@@ -17,20 +17,23 @@ API、Worker、dispatcher 与 migrate 复用应用镜像，使用非 root 用户
 | 配置 | 说明 |
 | --- | --- |
 | APP_ENV、LOG_LEVEL | 环境标识和结构化日志级别 |
-| DATABASE_URL、CELERY_BROKER_URL | 由环境或密钥服务注入，生产开启加密和最小权限 |
-| AUTH_ISSUER、AUTH_AUDIENCE | 企业身份源接入后启用。开发测试通过隔离身份配置 |
-| MODEL_PROVIDER_MODE、MODEL_CONFIG_FILE | 本地默认 fake；真实模式读取受控服务端配置与秘密引用 |
+| DEV_AUTH_TOKEN、DEV_AUTH_ROLE、CURSOR_SIGNING_KEY | 开发身份及游标签名。开发身份仅在 local/test 启用，真实凭证与签名密钥不进仓库 |
+| DATABASE_URL、CELERY_BROKER_URL | 由环境或密钥服务注入，M1 使用 DATABASE_URL，M2 加入 CELERY_BROKER_URL。生产开启加密和最小权限 |
+| AUTH_ISSUER、AUTH_AUDIENCE | 企业身份源确认后启用。M1 仅支持 local/test 安全身份，生产模式缺少正式认证时拒绝就绪 |
+| MODEL_PROVIDER_MODE、MODEL_CONFIG_FILE | 本地默认 fake；M3 读取服务端配置及秘密引用。真实模式启用前配置 HTTPS 白名单、受控出口和价格/预算 |
 | MAX_RUN_ITEMS、WORKER_CONCURRENCY | 首轮单次运行上限 1,000；Worker 并发对应每个 prefork 实例的子进程数，按队列压测确定 |
 | CANDIDATE_TIMEOUT_S、JUDGE_TIMEOUT_S、ITEM_LEASE_S | 初始值 25、25、150；与任务硬超时和 Redis 可见性配置一起验证 |
+| RUN_TOKEN_BUDGET、RUN_COST_BUDGET、RUN_MAX_CALLS、RUN_BUDGET_CURRENCY | M3 真实模式必须显式配置正额度及统一计费币种，接入前核验价格上界 |
 | DISPATCH_INTERVAL_S、REDIS_VISIBILITY_TIMEOUT_S | 调度扫描间隔与 300 秒可见性初始值 |
 | OTEL_EXPORTER_OTLP_ENDPOINT | 可选，配置日志和链路采集目标 |
 
-Redis 使用独立实例或专用部署，启用持久化与 noeviction 策略。Redis 发生数据丢失时由 PostgreSQL 恢复派发。真实端点只从受控配置读取；镜像、日志和公开仓库不保存环境密钥或生产样本。
+Redis 使用独立实例或专用部署，启用持久化与 noeviction 策略。Redis 发生数据丢失时由 PostgreSQL 恢复派发。真实端点只从受控配置读取。生产出站限制见 [Endpoint 与运行预算](03-architecture.md#endpoint-与运行预算)；镜像、日志和公开仓库不保存环境密钥或生产样本。
 
 ## M1 本地和 CI 启动顺序
 
 ```powershell
 Copy-Item .env.example .env
+# 先将本地占位值替换成隔离开发配置，再启动服务。
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps -a
@@ -38,14 +41,14 @@ Invoke-RestMethod http://localhost:8000/health/ready
 docker compose logs --tail=100 api migrate
 ```
 
-迁移作业应成功退出，其余进程应运行且必要依赖就绪。M1 冒烟验证探针和数据集导入发布。M2 加入 fake 模型端到端脚本，验证提交运行、按 ID 查询和结果对账。查看失败时先定位 `run_id`，再按执行项和尝试号读脱敏日志。正常停机使用 `docker compose down` 保留数据卷。
+迁移作业应成功退出，其余进程应运行且必要依赖就绪。M1 冒烟验证探针，用 `uv run --locked python -m scripts.smoke_m1` 在本地验证数据集导入、发布和领域评分。M2 加入 fake 模型端到端脚本，验证提交运行、按 ID 查询和结果对账。查看失败时先定位 `run_id`，再按执行项和尝试号读脱敏日志。正常停机使用 `docker compose down` 保留数据卷。
 
-前端构建产物按提交版本发布。网关优先匹配 `/api/v1` 到 FastAPI，管理台页面支持客户端路由回退。模型凭据只注入服务端。Worker 扩容前核对供应商并发、请求与 Token 额度以及数据库连接池容量。按 LLM 与 Agent 队列分别调整进程数、观察积压和 429，详细采样见 [Worker 并发压测](06-test-plan.md#worker-并发压测)。
+M5 前端构建产物按提交版本发布。网关优先匹配 `/api/v1` 到 FastAPI，管理台页面支持客户端路由回退。模型凭据只注入服务端。Worker 扩容前核对供应商并发、请求与 Token 额度以及数据库连接池容量。按 LLM 与 Agent 队列分别调整进程数、观察积压和 429，详细采样见 [Worker 并发压测](06-test-plan.md#worker-并发压测)。
 
 ## 发布和回滚
 
 1. CI 运行 lint、契约、基础设施与迁移检查，构建按摘要标识的镜像，记录提交、锁文件、镜像与迁移版本。
-2. 预发恢复脱敏数据，验证迁移、从 Redis 中断恢复、Worker 优雅退出及 fake 端到端。
+2. 预发恢复脱敏数据，验证迁移、从 Redis 中断恢复、Worker 优雅退出及 fake 端到端（M2 起）。
 3. 生产发布前确认备份点及数据库升级路径。先执行向后兼容扩展，再滚动发布 API、调度和 Worker，必要时暂停提交并排空在途任务。待旧版全退后收缩 schema。
 4. API 探针、积压和错误率恶化时停止扩大发布。兼容 schema 下恢复上一版镜像；破坏性变化按数据恢复预案执行，先保留事故证据与恢复点。
 
@@ -60,7 +63,7 @@ docker compose logs --tail=100 api migrate
 | 数据库不可用 | API 返回 503；恢复连接后确认迁移版本和活跃租约，再恢复派发 |
 | 日志疑似泄露 | 关闭相关字段输出、轮换凭据、按组织流程审计访问和影响 |
 
-所有告警由生产值班人或团队接收，标签使用有限枚举。准备度检查数据库和 schema，Redis 与供应商健康通过独立监测体现。
+M3 监控 candidate/judge 各自的延迟、429、错误、成本、未知预留和预算拒绝。所有告警由生产值班人或团队接收，标签使用有限枚举。准备度检查数据库和 schema，Redis 与供应商健康通过独立监测体现。
 
 ## 备份和恢复
 
