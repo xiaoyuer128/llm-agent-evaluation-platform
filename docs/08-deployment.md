@@ -6,9 +6,9 @@
 
 | 环境 | 服务 | 数据与访问 |
 | --- | --- | --- |
-| 本地与 CI | M1 启动 api、migrate、postgres、redis，M2 加入 worker 和 dispatcher | M2 默认确定性 fake 模型，API 可绑定 127.0.0.1，数据库和 Redis 仅容器网 |
+| 本地与 CI | M1 启动 api、migrate、postgres、redis，Vue 3 在 frontend 独立开发和构建；M2 加入 worker 和 dispatcher | 前端开发服务器代理 API 到本地 FastAPI。M2 默认确定性 fake 模型，数据库和 Redis 仅容器网 |
 | 预发 | 与生产同镜像，将数据库和 Redis 置于独立网络 | 经审批的测试密钥、配额和脱敏集，验证迁移、积压和备份 |
-| 生产 | TLS 网关、API 实例、Worker 池、调度实例、独立 PostgreSQL/Redis | 部署平台待确认；网关验证身份，应用校验授权；供应商和数据库走受控网络 |
+| 生产 | TLS 网关、Vue 3 静态工件、API 实例、Worker 池、调度实例、独立 PostgreSQL/Redis | 同源交付管理台与 API；网关验证身份，应用校验授权；供应商和数据库走受控网络 |
 
 API、Worker、dispatcher 与 migrate 复用应用镜像，使用非 root 用户。Compose 通过 `service_healthy` 等待基础设施，通过 `service_completed_successfully` 等待迁移。生产以单独的迁移作业控制 schema 版本和升级顺序，不由 API 副本并行迁移。 [Docker Compose 启动顺序](https://docs.docker.com/compose/how-tos/startup-order/)
 
@@ -20,7 +20,7 @@ API、Worker、dispatcher 与 migrate 复用应用镜像，使用非 root 用户
 | DATABASE_URL、CELERY_BROKER_URL | 由环境或密钥服务注入，生产开启加密和最小权限 |
 | AUTH_ISSUER、AUTH_AUDIENCE | 企业身份源接入后启用。开发测试通过隔离身份配置 |
 | MODEL_PROVIDER_MODE、MODEL_CONFIG_FILE | 本地默认 fake；真实模式读取受控服务端配置与秘密引用 |
-| MAX_RUN_ITEMS、WORKER_CONCURRENCY | 首轮单次运行上限 1,000；Worker 并发按队列压测确定 |
+| MAX_RUN_ITEMS、WORKER_CONCURRENCY | 首轮单次运行上限 1,000；Worker 并发对应每个 prefork 实例的子进程数，按队列压测确定 |
 | CANDIDATE_TIMEOUT_S、JUDGE_TIMEOUT_S、ITEM_LEASE_S | 初始值 25、25、150；与任务硬超时和 Redis 可见性配置一起验证 |
 | DISPATCH_INTERVAL_S、REDIS_VISIBILITY_TIMEOUT_S | 调度扫描间隔与 300 秒可见性初始值 |
 | OTEL_EXPORTER_OTLP_ENDPOINT | 可选，配置日志和链路采集目标 |
@@ -39,6 +39,8 @@ docker compose logs --tail=100 api migrate
 ```
 
 迁移作业应成功退出，其余进程应运行且必要依赖就绪。M1 冒烟验证探针和数据集导入发布。M2 加入 fake 模型端到端脚本，验证提交运行、按 ID 查询和结果对账。查看失败时先定位 `run_id`，再按执行项和尝试号读脱敏日志。正常停机使用 `docker compose down` 保留数据卷。
+
+前端构建产物按提交版本发布。网关优先匹配 `/api/v1` 到 FastAPI，管理台页面支持客户端路由回退。模型凭据只注入服务端。Worker 扩容前核对供应商并发、请求与 Token 额度以及数据库连接池容量。按 LLM 与 Agent 队列分别调整进程数、观察积压和 429，详细采样见 [Worker 并发压测](06-test-plan.md#worker-并发压测)。
 
 ## 发布和回滚
 

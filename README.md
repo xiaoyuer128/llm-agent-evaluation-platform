@@ -4,12 +4,14 @@
 
 当前发布为 **设计基线 v0.1**。仓库包含设计、测试规格及架构图。应用实现、环境文件和运行验收按 [开发进度](docs/09-development-progress.md) 交付。
 
+技术基线为 Vue 3、FastAPI、PostgreSQL 和 Redis + Celery。首期由 Celery 按样本执行项并行。实测确认 Worker 主要等待模型 I/O 后，再引入 `asyncio` 提高单进程并发。
+
 ## 文档
 
 | 文档 | 内容 |
 | --- | --- |
 | [01 项目需求](docs/01-requirements.md) | 用户、范围、流程与验收 |
-| [02 技术选型](docs/02-tech-stack.md) | Python 技术栈、依赖边界和待确认决策 |
+| [02 技术选型](docs/02-tech-stack.md) | 前后端技术栈、并发策略和开源项目参考 |
 | [03 系统架构](docs/03-architecture.md) | 进程、队列、恢复、权限和故障路径 |
 | [04 数据库设计](docs/04-database-design.md) | ER 图、表结构、约束、索引与迁移 |
 | [05 API 接口设计](docs/05-api-design.md) | 路由、请求响应、状态码与幂等 |
@@ -24,6 +26,7 @@
 docs/                    当前设计文档
   diagrams/              架构、ER 和评测流程图
 backend/                 M1 起交付的 Python 应用
+frontend/                M1 起交付的 Vue 3 管理台
 tests/                   M1 起交付的自动化测试
 scripts/                 随里程碑交付的运维与冒烟脚本
 docker-compose.yml       M1 起交付的本地和 CI 环境

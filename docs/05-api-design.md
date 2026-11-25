@@ -81,6 +81,12 @@ Content-Type: application/json
 
 详情返回 `status`、`total_items`、`counts`（六项执行状态计数之和等于总数）、`targets`。每个 target 返回 `target_id`、`model_config_id`、`counts`、`metrics`。指标采用 `{value,numerator,denominator}` 表示比例，分位数及用量采用 `{value,sample_count,eligible_count}`，并返回覆盖率或由字段推导。进行中的统计标记 `provisional: true`。
 
+## 管理台对接
+
+- 评测提交成功后使用响应的 `Location` 打开运行详情。提交结果未知并重试时复用同一个 `Idempotency-Key`，仅在用户发起新的运行时生成新键。
+- 运行详情对 `queued`、`running` 和 `cancel_requested` 轮询，等待上一次请求结束后再发起下一次。进入终态或离开页面时停止自动轮询。遇到 429 按 `Retry-After` 退避，遇到暂时性错误保留上次结果并提示更新时间。
+- 样本列表返回 `item_id, target_id, case_key, repeat_no, status, final_score, error_code`，支持按候选、状态和错误类别过滤。对比视图按 `case_key` 和 `repeat_no` 对齐同一数据版本中的各候选，从详情加载候选输出和评分证据，分别显示低分、执行失败和缺失用量。角色受限时展示服务端允许返回的摘要。
+
 ## 错误格式
 
 ```json
